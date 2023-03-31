@@ -1,7 +1,5 @@
 #!/usr/bin/env -S python3 -u
 
-## ./3700crawler mccann.d 002135909
-
 import argparse, socket, ssl, re, gzip
 
 DEFAULT_SERVER = "proj5.3700.network"
@@ -63,9 +61,10 @@ class Crawler:
         links = get_page_links(start_page)
         ## crawls all the pages until all the flags are found
         self.find_flags(links)
-        print(self.flags)
+        for flag in self.flags:
+            print(flag)
     
-    ##this shit will make get message I guess
+    ##sends a get message and decodes it and returns it 
     def get(self, path):
 
         if self.session_cookie is None:
@@ -76,11 +75,14 @@ class Crawler:
         self.mysocket.send(request.encode('ascii'))
         data = self.mysocket.recv(14096)
 
+        ## retries connection if no data
         if len(data) == 0:
             self.connect()
             return self.get(path)
         else:
+            ## decompressing gzip body
             yuh = data.split(b"\r\n\r\n")
+            ## handling chunking (when header and body get separated)
             if len(yuh[1]) == 0:
                 self.mysocket.send(request.encode('ascii'))
                 bruh = self.mysocket.recv(14096)
