@@ -61,7 +61,6 @@ class Crawler:
         start_page = self.login()
         ## extract all the profile links from the start page, ignoring duplicates
         links = get_page_links(start_page)
-        print(links)
         ## crawls all the pages until all the flags are found
         self.find_flags(links)
         print(self.flags)
@@ -116,8 +115,8 @@ class Crawler:
             return
         else:
             links_copy = links_copy - links
-            print("exploring this many next")
-            print(len(links_copy))
+            ##print("exploring this many next")
+            ##print(len(links_copy))
             self.find_flags(links_copy)
 
     
