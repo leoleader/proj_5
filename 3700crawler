@@ -1,0 +1,152 @@
+#!/usr/bin/env -S python3 -u
+
+import argparse, socket, ssl, re, copy
+
+DEFAULT_SERVER = "proj5.3700.network"
+DEFAULT_PORT = 443
+
+##below are three parsing methods
+
+## takes the current page and extracts all the links, returning a set of links
+def get_page_links(page):
+    links = re.findall('(?<=<a href=\"/fakebook)[^\"]+', page, re.MULTILINE)
+    result = set()
+    for link in links:
+        result.add("/fakebook" + link)
+    return result
+
+# get the status code from the data (returned as a string)
+def get_status(data):
+    match = re.search("(?<=HTTP/[1-2].[0-1] )[0-9]{3}", data)
+    if match is not None:
+        return data[match.start():match.end()]
+
+## when we receive a 302 response, gotta parse and get the location for the get
+def got_302(data):
+    location_start = data.split("Location: ", 1)
+    location_end = location_start[1].split("\r\n", 1)
+    return location_end[0]
+
+# get and return any flags found in the data
+def check_for_flag(data):
+    match = re.findall('(?<=<h2 class=\'secret_flag\' style=\"color:red\">FLAG: )[^<]+(?=</h2>)', data, re.MULTILINE)
+    flags = set()
+    for m in match:
+        if len(m) == 64:
+            flags.add(m)
+    return flags
+
+## our actual crawler class
+
+class Crawler:
+    ## sets server, port, user, pass to provided args
+    def __init__(self, args):
+        self.server = args.server
+        self.port = args.port
+        self.username = args.username
+        self.password = args.password
+
+        self.mysocket = None
+        self.session_cookie = None
+        self.flags = set()
+
+    ## goal is to connect socket using tls, login, get all the links, 
+    ## crawl until all 5 flags are found, then print the flags
+    def run(self):
+        ## connect to socket and wrap it with tls
+        self.connect()
+        ## use get and post to login and get start page data
+        start_page = self.login().decode('ascii')
+        ## extract all the profile links from the start page, ignoring duplicates
+        links = get_page_links(start_page)
+        ## crawls all the pages until all the flags are found
+        self.find_flags(links)
+        print("lets gooo we found these flags")
+        print(self.flags)
+    
+    ##this shit will make get message I guess
+    def get(self, path):
+
+        self.connect()
+
+        if self.session_cookie is None:
+            request = "GET %s HTTP/1.0\r\nHost: %s\r\nConnection: keep-alive\r\n\r\n" % (path, self.server)
+        else:
+            request = "GET %s HTTP/1.0\r\nHost: %s\r\nConnection: keep-alive\r\n%s\r\n\r\n" % (path, self.server, self.session_cookie)
+
+        self.mysocket.send(request.encode('ascii'))
+        data = self.mysocket.recv(14096)
+
+        return data
+
+    ##connects to server and port using tls wrap
+    def connect(self):
+        self.mysocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.mysocket = ssl.wrap_socket(self.mysocket)
+        self.mysocket.connect((self.server, self.port))
+    
+    ## for each link in the set, go to the link, check for secret flags, if 
+    ## all flags found end, else get_page_links
+    def find_flags(self, links):
+        links_copy = set(links)
+        for link in links:
+            response = self.get(link).decode('ascii')
+            status_code = get_status(response)
+            if status_code == "200":
+                self.flags.update(check_for_flag(response))
+                if len(self.flags) >= 5:
+                    return
+                links_copy.update(get_page_links(response))
+            elif status_code == "302":
+                links_copy.add(got_302(response))
+            elif status_code == "404" or status_code == "403":
+                continue
+        if len(self.flags) >= 5:
+            return
+        else:
+            links_copy = links_copy - links
+            print("exploring this many next")
+            print(len(links_copy))
+            self.find_flags(links_copy)
+
+    
+    ##this method should sned a POST request to the login page with the user and pass data, then recieve the cookie
+    ## so that we can start sending post requests to the serverwith that cookie
+    def login(self):
+        ## send get request to /accounts/login/?next=/fakebook/ to get login page and find csrf token
+        login_page = self.get("/accounts/login/?next=/fakebook/")
+
+        ##ok now we have to pull the csrf token from the recieved data
+        csrf_start = login_page.decode('ascii').split("csrftoken=", 1)
+        csrf_end = csrf_start[1].split(";", 1)
+        session_id_start = login_page.decode('ascii').split("sessionid=", 1)
+        session_id_end = session_id_start[1].split(";", 1)
+        session_id = session_id_end[0]
+        csrf = csrf_end[0]
+
+        # formatting and sending post message to login using csrf and session id
+        raw = f"username={self.username}&password={self.password}&csrfmiddlewaretoken={csrf}&next=%2Ffakebook%2F"
+        posty = (f"POST /accounts/login/ HTTP/1.0\r\nHost: {self.server}\r\nContent-Type: application/x-www-form-urlencoded\r\n" 
+                 + f"Content-Length: {len(raw)}\r\nCookie: csrftoken={csrf}; sessionid={session_id}\r\n\r\n{raw}\r\n")
+
+        self.mysocket.send(posty.encode('ascii'))
+        data = self.mysocket.recv(14096)
+
+        ##ok now we just need to get cookie after login and then we shouldn't need to worry about cookies anymore
+        csrf_start = data.decode('ascii').split("csrftoken=", 1)
+        csrf_end = csrf_start[1].split(";", 1)
+        session_id_pos = re.search("(?<=Set-Cookie: )sessionid=[^;]+", data.decode('ascii'))
+        self.session_cookie = f"Cookie: csrftoken={csrf_end[0]}; {data.decode('ascii')[session_id_pos.start():session_id_pos.end()]}"
+        return self.get(got_302(data.decode('ascii')))
+
+
+## at command line runs the program with optional args server and port, and required args user and pass
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='crawl Fakebook')
+    parser.add_argument('-s', dest="server", type=str, default=DEFAULT_SERVER, help="The server to crawl")
+    parser.add_argument('-p', dest="port", type=int, default=DEFAULT_PORT, help="The port to use")
+    parser.add_argument('username', type=str, help="The username to use")
+    parser.add_argument('password', type=str, help="The password to use")
+    args = parser.parse_args()
+    sender = Crawler(args)
+    sender.run()
