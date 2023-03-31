@@ -1,6 +1,8 @@
 #!/usr/bin/env -S python3 -u
 
-import argparse, socket, ssl, re, copy
+## ./3700crawler mccann.d 002135909
+
+import argparse, socket, ssl, re, gzip
 
 DEFAULT_SERVER = "proj5.3700.network"
 DEFAULT_PORT = 443
@@ -56,28 +58,37 @@ class Crawler:
         ## connect to socket and wrap it with tls
         self.connect()
         ## use get and post to login and get start page data
-        start_page = self.login().decode('ascii')
+        start_page = self.login()
         ## extract all the profile links from the start page, ignoring duplicates
         links = get_page_links(start_page)
+        print(links)
         ## crawls all the pages until all the flags are found
         self.find_flags(links)
-        print("lets gooo we found these flags")
         print(self.flags)
     
     ##this shit will make get message I guess
     def get(self, path):
 
-        self.connect()
-
         if self.session_cookie is None:
-            request = "GET %s HTTP/1.0\r\nHost: %s\r\nConnection: keep-alive\r\n\r\n" % (path, self.server)
+            request = "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: keep-alive\r\nAccept-Encoding: gzip\r\n\r\n" % (path, self.server)
         else:
-            request = "GET %s HTTP/1.0\r\nHost: %s\r\nConnection: keep-alive\r\n%s\r\n\r\n" % (path, self.server, self.session_cookie)
+            request = "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: keep-alive\r\nAccept-Encoding: gzip\r\n%s\r\n\r\n" % (path, self.server, self.session_cookie)
 
         self.mysocket.send(request.encode('ascii'))
         data = self.mysocket.recv(14096)
 
-        return data
+        if len(data) == 0:
+            self.connect()
+            return self.get(path)
+        else:
+            yuh = data.split(b"\r\n\r\n")
+            if len(yuh[1]) == 0:
+                self.mysocket.send(request.encode('ascii'))
+                bruh = self.mysocket.recv(14096)
+                decompressed = gzip.decompress(bruh)
+            else:
+                decompressed = gzip.decompress(yuh[1])
+            return (yuh[0] + decompressed).decode('ascii')
 
     ##connects to server and port using tls wrap
     def connect(self):
@@ -90,7 +101,7 @@ class Crawler:
     def find_flags(self, links):
         links_copy = set(links)
         for link in links:
-            response = self.get(link).decode('ascii')
+            response = self.get(link)
             status_code = get_status(response)
             if status_code == "200":
                 self.flags.update(check_for_flag(response))
@@ -117,9 +128,9 @@ class Crawler:
         login_page = self.get("/accounts/login/?next=/fakebook/")
 
         ##ok now we have to pull the csrf token from the recieved data
-        csrf_start = login_page.decode('ascii').split("csrftoken=", 1)
+        csrf_start = login_page.split("csrftoken=", 1)
         csrf_end = csrf_start[1].split(";", 1)
-        session_id_start = login_page.decode('ascii').split("sessionid=", 1)
+        session_id_start = login_page.split("sessionid=", 1)
         session_id_end = session_id_start[1].split(";", 1)
         session_id = session_id_end[0]
         csrf = csrf_end[0]
@@ -130,14 +141,15 @@ class Crawler:
                  + f"Content-Length: {len(raw)}\r\nCookie: csrftoken={csrf}; sessionid={session_id}\r\n\r\n{raw}\r\n")
 
         self.mysocket.send(posty.encode('ascii'))
-        data = self.mysocket.recv(14096)
+        data = self.mysocket.recv(14096).decode('ascii')
 
         ##ok now we just need to get cookie after login and then we shouldn't need to worry about cookies anymore
-        csrf_start = data.decode('ascii').split("csrftoken=", 1)
+        csrf_start = data.split("csrftoken=", 1)
         csrf_end = csrf_start[1].split(";", 1)
-        session_id_pos = re.search("(?<=Set-Cookie: )sessionid=[^;]+", data.decode('ascii'))
-        self.session_cookie = f"Cookie: csrftoken={csrf_end[0]}; {data.decode('ascii')[session_id_pos.start():session_id_pos.end()]}"
-        return self.get(got_302(data.decode('ascii')))
+        session_id_pos = re.search("(?<=Set-Cookie: )sessionid=[^;]+", data)
+        self.session_cookie = f"Cookie: csrftoken={csrf_end[0]}; {data[session_id_pos.start():session_id_pos.end()]}"
+        result = self.get(got_302(data))
+        return result
 
 
 ## at command line runs the program with optional args server and port, and required args user and pass
